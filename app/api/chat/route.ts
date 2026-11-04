@@ -8,11 +8,18 @@ import { isExplicitHumanRequest } from '@/lib/intents';
 import { answerWithGemini } from '@/lib/mastra/nexo-agent';
 import { classifyAiFailure, fallbackExplanation, processingExpired } from '@/lib/ai-runtime';
 import { geminiCircuit } from '@/lib/ai-circuit-breaker';
+import { addEmployeeHumanMessage } from '@/lib/analyst-flow';
 import type { Conversation, Decision, Message, Store, Ticket } from '@/lib/types';
 
 export const runtime = 'nodejs';
 const askTickets = /meus chamados|meu chamado|status|andamento/i;
-const AI_TIMEOUT_MS = 18_000;
+const AI_TIMEOUT_MS = Math.max(
+  1000,
+  Math.min(
+    60000,
+    Number(process.env.AI_TIMEOUT_MS || 30000)
+  )
+);
 
 type AgentResult = {
   text: string;
@@ -63,7 +70,13 @@ export async function POST(req: Request) {
         c = { id: crypto.randomUUID(), userId: user.id, state: 'agent', messages: [], updatedAt: new Date().toISOString() };
         db.conversations.push(c);
       }
-      if (c.state !== 'agent') throw new Error('Conversa em atendimento humano ou encerrada');
+      // Enquanto a conversa está com o service desk, o funcionário pode enviar
+      // mensagens diretamente ao humano. Não chamamos decide(), flowTicket() ou Gemini.
+      if (c.state === 'waiting_analyst' || c.state === 'analyst') {
+        addEmployeeHumanMessage(c, text);
+        return { kind: 'immediate' as const, conversation: structuredClone(c) };
+      }
+      if (c.state !== 'agent') throw new Error('Conversa encerrada');
       if (c.processing && !processingExpired(c.processing.startedAt)) throw new Error('Aguarde a resposta anterior antes de enviar outra mensagem');
       delete c.processing; // reserva abandonada após reinício ou falha anterior
       if (c.messages.filter(m => m.sender === 'employee').length >= 30) throw new Error('Limite de 30 mensagens por sessão atingido');

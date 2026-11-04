@@ -1,6 +1,44 @@
 import { NextResponse } from 'next/server';
 import { currentUser } from '@/lib/auth';
-import { readStore,mutateStore } from '@/lib/store';
-export const runtime='nodejs';
-export async function GET(){const user=await currentUser();if(!user||user.role!=='analyst')return NextResponse.json({error:'Acesso exclusivo ao analista'},{status:403});const db=await readStore();return NextResponse.json({conversations:db.conversations,users:db.users.filter(u=>u.role==='employee'),tickets:db.tickets});}
-export async function POST(req:Request){const user=await currentUser();if(!user||user.role!=='analyst')return NextResponse.json({error:'Proibido'},{status:403});const b=await req.json() as {conversationId?:string;action?:'assume'|'return'|'close'};if(!b.conversationId||!['assume','return','close'].includes(b.action??''))return NextResponse.json({error:'Dados inválidos'},{status:400});try{const result=await mutateStore(db=>{const c=db.conversations.find(c=>c.id===b.conversationId);if(!c)throw new Error('Conversa não encontrada');if(b.action==='assume'&&c.state==='waiting_analyst')c.state='analyst';else if(b.action==='return'&&c.state==='analyst')c.state='agent';else if(b.action==='close'&&c.state==='analyst')c.state='closed';else throw new Error('Transição de estado não permitida');c.updatedAt=new Date().toISOString();return c;});return NextResponse.json({conversation:result});}catch(e){return NextResponse.json({error:(e as Error).message},{status:409});}}
+import { readStore, mutateStore } from '@/lib/store';
+import { analystActions, applyAnalystAction, type AnalystAction } from '@/lib/analyst-flow';
+
+export const runtime = 'nodejs';
+
+export async function GET() {
+  const user = await currentUser();
+  if (!user || user.role !== 'analyst') {
+    return NextResponse.json({ error: 'Acesso exclusivo ao analista' }, { status: 403 });
+  }
+  const db = await readStore();
+  return NextResponse.json({
+    conversations: db.conversations,
+    users: db.users.filter(u => u.role === 'employee'),
+    tickets: db.tickets
+  });
+}
+
+export async function POST(req: Request) {
+  const user = await currentUser();
+  if (!user || user.role !== 'analyst') {
+    return NextResponse.json({ error: 'Acesso exclusivo ao analista' }, { status: 403 });
+  }
+  let body: { conversationId?: string; action?: string; text?: string };
+  try { body = await req.json(); } catch {
+    return NextResponse.json({ error: 'JSON inválido' }, { status: 400 });
+  }
+  if (!body.conversationId || !body.action || !analystActions.includes(body.action as AnalystAction)) {
+    return NextResponse.json({ error: 'Ação ou conversa inválida' }, { status: 400 });
+  }
+  try {
+    const conversation = await mutateStore(db => {
+      const c = db.conversations.find(c => c.id === body.conversationId);
+      if (!c) throw new Error('Conversa não encontrada');
+      applyAnalystAction(c, body.action as AnalystAction, user.name, body.text);
+      return structuredClone(c);
+    });
+    return NextResponse.json({ conversation });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Falha ao processar' }, { status: 409 });
+  }
+}

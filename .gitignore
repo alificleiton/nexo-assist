@@ -1,7 +1,19 @@
+# Dependências e artefatos de build
 node_modules/
 .next/
+out/
+*.tsbuildinfo
+
+# Segredos e configuração individual
 .env
 .env.local
 .env.*.local
-data/
-*.tsbuildinfo
+!.env.example
+
+# Estado da demonstração (não compartilhar dados de usuários)
+data/state.json
+data/state.json.tmp
+
+# Logs e arquivos temporários
+*.log
+.DS_Store

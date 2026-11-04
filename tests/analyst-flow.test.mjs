@@ -1,0 +1,17 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { applyAnalystAction, addEmployeeHumanMessage } from '../lib/analyst-flow.ts';
+const sample = (state='waiting_analyst') => ({id:'c1',userId:'u1',state,messages:[],updatedAt:'2026-01-01T00:00:00Z'});
+test('analista assume conversa em espera',()=>{const c=sample();applyAnalystAction(c,'assume','Marina');assert.equal(c.state,'analyst');});
+test('analista não assume conversa com agente',()=>{assert.throws(()=>applyAnalystAction(sample('agent'),'assume','Marina'));});
+test('agente fica pausado e analista pode responder',()=>{const c=sample();applyAnalystAction(c,'assume','Marina');applyAnalystAction(c,'reply','Marina','Verificando seu caso');assert.equal(c.messages[0].sender,'analyst');assert.equal(c.messages[0].text,'Verificando seu caso');});
+test('analista não responde sem assumir',()=>{assert.throws(()=>applyAnalystAction(sample(),'reply','Marina','olá'));});
+test('resposta vazia é rejeitada',()=>{const c=sample('analyst');assert.throws(()=>applyAnalystAction(c,'reply','Marina','  '));});
+test('devolver retorna à IA',()=>{const c=sample('analyst');applyAnalystAction(c,'return','Marina');assert.equal(c.state,'agent');});
+test('encerrar termina conversa',()=>{const c=sample('analyst');applyAnalystAction(c,'close','Marina');assert.equal(c.state,'closed');});
+test('conversa fechada não pode ser reaberta por analista',()=>{assert.throws(()=>applyAnalystAction(sample('closed'),'assume','Marina'));});
+test('funcionário pode responder quando analista atende sem acionar IA',()=>{const c=sample('analyst');addEmployeeHumanMessage(c,'Testei e ainda falha');assert.equal(c.messages.length,1);assert.equal(c.messages[0].sender,'employee');assert.equal(c.state,'analyst');});
+test('funcionário pode complementar durante espera',()=>{const c=sample();addEmployeeHumanMessage(c,'Tenho print do erro');assert.equal(c.messages[0].sender,'employee');});
+test('mensagem humana não entra quando agente está ativo',()=>{assert.throws(()=>addEmployeeHumanMessage(sample('agent'),'Oi'));});
+test('mensagem humana não entra após encerramento',()=>{assert.throws(()=>addEmployeeHumanMessage(sample('closed'),'Oi'));});
+test('resposta limita comprimento',()=>{assert.throws(()=>applyAnalystAction(sample('analyst'),'reply','Marina','x'.repeat(2001)));});
