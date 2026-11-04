@@ -7,6 +7,7 @@ import { fastAnswer } from '@/lib/fast-answers';
 import { isExplicitHumanRequest } from '@/lib/intents';
 import { answerWithGemini } from '@/lib/mastra/nexo-agent';
 import { classifyAiFailure, fallbackExplanation, processingExpired } from '@/lib/ai-runtime';
+import { geminiCircuit } from '@/lib/ai-circuit-breaker';
 import type { Conversation, Decision, Message, Store, Ticket } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -95,33 +96,49 @@ export async function POST(req: Request) {
     // Fase 2: chamada externa FORA de mutateStore. Uma conversa possui somente
     // uma solicitação em voo; outras conversas podem progredir em paralelo.
     const started = Date.now();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(new DOMException('Tempo limite excedido', 'TimeoutError')), AI_TIMEOUT_MS);
+    const permit = geminiCircuit.beforeRequest();
     let result: AgentResult;
     let failure: ReturnType<typeof classifyAiFailure> | null = null;
-    try {
-      result = await answerWithGemini({ text, tickets: phase.tickets, conversation: phase.conversation, signal: controller.signal });
-      if (askTickets.test(text) && !result.decision.action.includes('Consultou chamados')) {
-        result = decide(text, phase.tickets);
-        result.decision.reason += ' (Consulta protegida: resposta sem ferramenta de chamados.)';
-      }
-    } catch (error) {
-      failure = controller.signal.aborted ? 'timeout' : classifyAiFailure(error);
-      // Sem stack trace, texto do usuário, token ou payload de ferramenta nos logs.
-      console.warn(`[NEXO ASSIST] Falha de IA: ${failure}; ${Date.now()-started}ms`);
+    let skippedCircuit = false;
+
+    if (!permit.allowed) {
+      // Circuito aberto: não chama a API externa e não retém a conversa por 18s.
+      skippedCircuit = true;
       result = decide(text, phase.tickets);
-      result.decision.reason += ` (Fallback: ${fallbackExplanation(failure)}.)`;
-    } finally {
-      clearTimeout(timeout);
+      result.decision.reason += ' (Fallback: provedor temporariamente suspenso após falhas consecutivas.)';
+      result.decision.trace = [
+        ...(result.decision.trace ?? []),
+        { kind: 'fallback', title: 'Circuit breaker aberto',
+          detail: `Consulta ao Gemini ignorada. Nova tentativa em aproximadamente ${Math.ceil(permit.retryAfterMs / 1000)}s.`, outcome: 'info' }
+      ];
+    } else {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(new DOMException('Tempo limite excedido', 'TimeoutError')), AI_TIMEOUT_MS);
+      try {
+        result = await answerWithGemini({ text, tickets: phase.tickets, conversation: phase.conversation, signal: controller.signal });
+        geminiCircuit.onSuccess();
+        if (askTickets.test(text) && !result.decision.action.includes('Consultou chamados')) {
+          result = decide(text, phase.tickets);
+          result.decision.reason += ' (Consulta protegida: resposta sem ferramenta de chamados.)';
+        }
+      } catch (error) {
+        failure = controller.signal.aborted ? 'timeout' : classifyAiFailure(error);
+        geminiCircuit.onFailure();
+        console.warn(`[NEXO ASSIST] Falha de IA: ${failure}; ${Date.now() - started}ms; circuito=${geminiCircuit.snapshot().state}`);
+        result = decide(text, phase.tickets);
+        result.decision.reason += ` (Fallback: ${fallbackExplanation(failure)}.)`;
+      } finally {
+        clearTimeout(timeout);
+      }
     }
-    const elapsed = Date.now()-started;
+    const elapsed = Date.now() - started;
     result.decision.trace = [
       ...(result.decision.trace ?? []),
       {
-        kind: failure ? 'fallback' : 'model',
-        title: failure ? 'Resiliência do atendimento' : 'Tempo de execução',
-        detail: `Duração da etapa IA: ${elapsed}ms. ${failure ? `Motivo: ${fallbackExplanation(failure)}.` : 'Consulta concluída.'}`,
-        outcome: failure ? 'info' : 'success'
+        kind: failure || skippedCircuit ? 'fallback' : 'model',
+        title: skippedCircuit ? 'Consulta externa evitada' : failure ? 'Resiliência do atendimento' : 'Tempo de execução',
+        detail: `Duração da etapa IA: ${elapsed}ms. ${skippedCircuit ? 'Circuit breaker aberto: resposta local.' : failure ? `Motivo: ${fallbackExplanation(failure)}.` : 'Consulta concluída.'}`,
+        outcome: failure || skippedCircuit ? 'info' : 'success'
       }
     ];
 
