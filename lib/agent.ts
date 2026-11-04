@@ -1,10 +1,58 @@
-import type { Decision,Ticket } from './types';
-const docs=[{keys:['vpn','809'],title:'VPN com erro 809',text:'Para Windows 10, reinstale o cliente VPN pelo portal de softwares e reinicie o computador. No Windows 11, abra um chamado.'},{keys:['horário','horario','suporte','service desk'],title:'Atendimento do service desk',text:'O service desk funciona de segunda a sexta das 8h às 18h. Chamados críticos têm plantão 24 horas.'},{keys:['senha','password'],title:'Redefinição de senha',text:'Use o portal corporativo de redefinição de senha. Se estiver bloqueado, abra um chamado de acesso.'}];
-export function decide(input:string,tickets:Ticket[]):{text:string;decision:Decision;transfer:boolean}{
- const q=input.toLocaleLowerCase('pt-BR');
- if(/analista|atendente|humano|pessoa real/.test(q))return {text:'Solicitei a transferência para um analista. O agente ficará pausado até o atendimento ser devolvido.',decision:{intent:'Solicitar humano',action:'Transferir conversa',reason:'O funcionário pediu atendimento humano.',confidence:1,source:'rules'},transfer:true};
- if(/meus chamados|meu chamado|status|andamento/.test(q)){const open=tickets.filter(t=>t.status!=='resolved');return {text:open.length?`Seus chamados em andamento:\n${open.map(t=>`• ${t.id}: ${t.title} (${t.status})`).join('\n')}`:'Você não tem chamados em andamento.',decision:{intent:'Consultar chamados',action:'Listar chamados autorizados',reason:'Consulta filtrada pelo identificador do funcionário autenticado.',confidence:0.99,source:'tickets'},transfer:false};}
- const hit=docs.find(d=>d.keys.some(k=>q.includes(k)));
- if(hit)return {text:`Segundo a central de ajuda (${hit.title}): ${hit.text}\n\nIsso resolveu seu problema?`,decision:{intent:'Consultar central de ajuda',action:'Responder com artigo',reason:`Correspondência com o artigo: ${hit.title}.`,confidence:0.82,source:'knowledge'},transfer:false};
- return {text:'Posso consultar seus chamados, orientar sobre VPN e senha ou transferir para um analista. Para abrir um novo chamado, descreva o problema, quantas pessoas são afetadas e a urgência. Para abrir, escreva abrir chamado. O sistema pedirá descrição, impacto e urgência e mostrará um rascunho antes de gravar.',decision:{intent:'Intenção não classificada',action:'Pedir esclarecimento',reason:'Não há informação suficiente para agir com segurança; nenhuma alteração foi feita.',confidence:0.25,source:'rules'},transfer:false};
+import type { Decision, Ticket } from './types';
+import { isExplicitHumanRequest } from './intents';
+import { fastAnswer } from './fast-answers';
+
+type LocalResult = { text: string; decision: Decision; transfer: boolean };
+
+/**
+ * Resposta local usada quando a IA está indisponível ou uma ação precisa
+ * seguir uma regra de negócio. Não faz correspondência de artigos por palavras
+ * isoladas: apenas consultas específicas aprovadas por fastAnswer().
+ */
+export function decide(input: string, tickets: Ticket[]): LocalResult {
+  const q = input.toLocaleLowerCase('pt-BR');
+
+  if (isExplicitHumanRequest(input)) {
+    return {
+      text: 'Solicitei a transferência para um analista. O agente ficará pausado até o atendimento ser devolvido.',
+      decision: {
+        intent: 'Solicitar humano', action: 'Transferir conversa',
+        reason: 'O funcionário solicitou explicitamente atendimento humano.',
+        confidence: 1, source: 'rules'
+      },
+      transfer: true
+    };
+  }
+
+  if (/meus chamados|meu chamado|status|andamento/i.test(q)) {
+    // O chamador deve sempre fornecer apenas tickets autorizados do usuário.
+    const open = tickets.filter(t => t.status !== 'resolved');
+    return {
+      text: open.length
+        ? `Seus chamados em andamento:\n${open.map(t => `• ${t.id}: ${t.title} (${t.status})`).join('\n')}`
+        : 'Você não tem chamados em andamento.',
+      decision: {
+        intent: 'Consultar chamados', action: 'Listar chamados autorizados',
+        reason: 'Consulta realizada sobre a lista autorizada fornecida pela API.',
+        confidence: 0.99, source: 'tickets'
+      },
+      transfer: false
+    };
+  }
+
+  // Compartilha a política restrita de relevância do caminho rápido.
+  // Ex.: "VPN erro 809" pode usar o artigo; "o que é VPN?" não pode.
+  const approvedArticle = fastAnswer(input);
+  if (approvedArticle) return approvedArticle;
+
+  return {
+    text: 'Não consegui concluir a consulta inteligente neste momento e não encontrei um artigo aprovado que responda especificamente à sua pergunta. Você pode tentar novamente ou solicitar atendimento humano escrevendo "quero falar com um analista".',
+    decision: {
+      intent: 'Orientação não encontrada',
+      action: 'Informar limitação e oferecer atendimento humano',
+      reason: 'Não houve correspondência específica com artigos aprovados. Nenhuma orientação técnica não verificada foi fornecida e nenhum chamado foi alterado.',
+      confidence: 0.25, source: 'rules'
+    },
+    transfer: false
+  };
 }

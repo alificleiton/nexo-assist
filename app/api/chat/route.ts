@@ -3,6 +3,7 @@ import { currentUser } from '@/lib/auth';
 import { readStore, mutateStore } from '@/lib/store';
 import { decide } from '@/lib/agent';
 import { flowTicket } from '@/lib/ticket-flow';
+import { fastAnswer } from '@/lib/fast-answers';
 import { isExplicitHumanRequest } from '@/lib/intents';
 import { answerWithGemini } from '@/lib/mastra/nexo-agent';
 import { classifyAiFailure, fallbackExplanation, processingExpired } from '@/lib/ai-runtime';
@@ -69,6 +70,9 @@ export async function POST(req: Request) {
 
       let result: AgentResult | null = flowTicket(text, c, db.tickets, user.id);
       if (!result && isExplicitHumanRequest(text)) result = decide('quero falar com um analista', owned);
+      // Respostas rápidas somente para artigos aprovados e consultas inequívocas.
+      // Perguntas genéricas, dados privados e pedidos ambíguos seguem para o Gemini.
+      if (!result) result = fastAnswer(text);
       if (result) {
         putMessages(c, text, result);
         return { kind: 'immediate' as const, conversation: structuredClone(c) };
