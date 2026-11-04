@@ -1,9 +1,9 @@
-import type { Conversation, Decision, Ticket, TicketDraft, Category, Priority } from './types';
+import type { Conversation, Decision, Ticket, Category, Priority } from './types';
+import { isExplicitTicketRequest } from './intents';
 
 // Demonstração determinística: chamadas estruturadas, sem alegar que existe um LLM.
 const positive = /^(sim|confirmo|confirmar|pode criar|pode atualizar|ok|confirmado)[.! ]*$/i;
 const negative = /^(não|nao|cancelar|cancela|não confirmo|nao confirmo)[.! ]*$/i;
-const start = /\b(abrir|criar|registrar|novo|nova|preciso abrir|solicitar|pedido de)\b.*\b(chamado|ticket|incidente|solicitação|solicitacao|acesso|equipamento|software)\b|^(abrir chamado|novo chamado)$/i;
 const normalize = (s:string) => s.toLocaleLowerCase('pt-BR').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
 const terms = (s:string)=>new Set(normalize(s).split(' ').filter(w=>w.length>3));
 function overlap(a:string,b:string){const A=terms(a),B=terms(b);if(!A.size||!B.size)return 0;let common=0;for(const w of A)if(B.has(w))common++;return common/Math.min(A.size,B.size);}
@@ -15,7 +15,7 @@ function decision(intent:string, action:string, reason:string, confidence=1):Dec
 interface Output {text:string;decision:Decision;transfer:boolean}
 export function flowTicket(text:string,c:Conversation,tickets:Ticket[],userId:string):Output|null {
  const draft=c.pendingDraft;
- if (!draft && !start.test(text))return null;
+ if (!draft && !isExplicitTicketRequest(text))return null;
  if (!draft){c.pendingDraft={step:'description'};return {text:'Vamos abrir seu chamado. Descreva o problema ou pedido com detalhes (equipamento/sistema, erro e o que você já tentou).',decision:decision('Abrir chamado','Solicitar descrição','Abertura iniciada sem modificar dados.'),transfer:false};}
  if(negative.test(text)){delete c.pendingDraft;return {text:'Rascunho cancelado. Nenhum chamado foi criado ou alterado.',decision:decision('Cancelar rascunho','Descartar rascunho','O funcionário recusou a operação.'),transfer:false};}
  if(draft.step==='description'){
